@@ -1,6 +1,7 @@
 import os
 import json
 import io
+from datetime import datetime
 from fastapi import FastAPI, Depends, HTTPException, Header, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from supabase import create_client, Client
@@ -23,8 +24,14 @@ SB_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 AI_KEY = os.getenv("GEMINI_API_KEY")
 DB_URL = os.getenv("DATABASE_URL")
 
+# Define the anchor categories for your charts and budgets
+PRIMARY_CATEGORIES = ["Food", "Travel", "Shopping", "Bills", "Entertainment", "Health"]
+FALLBACK_CATEGORY = "Misc"
+
+# Stable 2026 model
+GEMINI_MODEL = "gemini-2.5-flash-lite" 
+
 # --- 2. SERVICE INITIALIZATIONS ---
-# Origins configured for deployment
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"], 
@@ -38,20 +45,18 @@ client = genai.Client(api_key=AI_KEY)
 
 # SQL Agent Initialization
 try:
-    print("🔌 Connecting to SQL Database...")
+    print(f"🔌 Connecting to SQL Database...")
     db = SQLDatabase.from_uri(DB_URL)
-    llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=AI_KEY, temperature=0)
+    llm = ChatGoogleGenerativeAI(model=GEMINI_MODEL, google_api_key=AI_KEY, temperature=0)
     toolkit = SQLDatabaseToolkit(db=db, llm=llm)
     agent_executor = create_sql_agent(
         llm=llm, toolkit=toolkit, verbose=True, 
         agent_type="tool-calling", allow_dangerous_requests=True
     )
-    print("✅ SQL Agent Ready using Gemini 2.5 Flash")
+    print(f"✅ SQL Agent Ready using {GEMINI_MODEL}")
 except Exception as e:
     print(f"⚠️ SQL Agent Warning: {e}")
     agent_executor = None
-
-# NOTE: whisper.load_model removed to fix 7.9GB build error
 
 # --- 3. AUTH DEPENDENCY ---
 async def get_current_user(authorization: str = Header(None)):
@@ -64,60 +69,92 @@ async def get_current_user(authorization: str = Header(None)):
     except Exception:
         raise HTTPException(status_code=401, detail="Invalid session")
 
-# --- 4. AI VISION ROUTE ---
+# --- 4. AI VISION ROUTE (FLEXIBLE CATEGORIES) ---
 @app.post("/api/v1/scan-receipt")
 async def scan_receipt(file: UploadFile = File(...), user=Depends(get_current_user)):
     try:
         image_data = await file.read()
-        prompt = "Extract details from this receipt image and return ONLY JSON: {amount, category, description, date}"
+        current_date = datetime.now().strftime("%Y-%m-%d")
+        
+        prompt = f"""
+        Analyze this receipt. 
+        Categorize the expense into one of these: {', '.join(PRIMARY_CATEGORIES)}. 
+        If the expense does not clearly fit into these, use '{FALLBACK_CATEGORY}'.
+        Note: Items like snacks, drinks, or groceries must be categorized as 'Food'.
+        Current Date: {current_date}
+        Return ONLY JSON: {{"amount": number, "category": string, "description": string, "date": "YYYY-MM-DD"}}
+        """
+        
         response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=[types.Part.from_text(text=prompt), types.Part.from_bytes(data=image_data, mime_type=file.content_type)],
+            model=GEMINI_MODEL,
+            contents=[
+                types.Part.from_text(text=prompt), 
+                types.Part.from_bytes(data=image_data, mime_type=file.content_type)
+            ],
             config=types.GenerateContentConfig(response_mime_type="application/json")
         )
         data = json.loads(response.text)
+        
+        # Ensure the category is valid before DB entry
+        final_category = data.get('category') if data.get('category') in PRIMARY_CATEGORIES else FALLBACK_CATEGORY
+        
         db_entry = {
             "user_id": user.id, 
             "amount": float(data.get('amount', 0)), 
-            "category": data.get('category', 'Misc'), 
+            "category": final_category, 
             "description": data.get('description', 'AI Scan'), 
-            "transaction_date": data.get('date', '2026-01-01')
+            "transaction_date": data.get('date', current_date)
         }
         supabase.table("transactions").insert(db_entry).execute()
         return {"status": "success", "data": data}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# --- 5. UPDATED AI VOICE ROUTE (No Local Whisper) ---
+# --- 5. AI VOICE ROUTE (FLEXIBLE CATEGORIES) ---
 @app.post("/api/v1/voice-entry")
 async def voice_entry(file: UploadFile = File(...), user=Depends(get_current_user)):
     try:
         audio_data = await file.read()
-        
-        # Gemini 2.5 handles audio files natively, eliminating the need for local Whisper
-        prompt = 'Transcribe this audio, then extract transaction details. Return ONLY JSON: {amount, category, description, date, transcript}'
+        current_date = datetime.now().strftime("%Y-%m-%d")
+        print(f"🎙️ Audio received at {current_date}")
+
+        prompt = f"""
+        Transcribe the audio and extract transaction details. 
+        Categorize into: {', '.join(PRIMARY_CATEGORIES)}. 
+        If it doesn't fit, use '{FALLBACK_CATEGORY}'.
+        Example: 'I spent 50 on snacks' -> Category: 'Food', Description: 'snacks'.
+        Return ONLY JSON: {{"amount": number, "category": string, "description": string, "date": "YYYY-MM-DD", "transcript": string}}
+        """
         
         ai_response = client.models.generate_content(
-            model="gemini-2.5-flash",
+            model=GEMINI_MODEL,
             contents=[
                 types.Part.from_text(text=prompt),
-                types.Part.from_bytes(data=audio_data, mime_type=file.content_type)
+                types.Part.from_bytes(data=audio_data, mime_type="audio/wav")
             ],
             config=types.GenerateContentConfig(response_mime_type="application/json")
         )
         
         data = json.loads(ai_response.text)
+        print(f"🤖 AI Result: {data}")
+
+        # Code-level category enforcement
+        final_category = data.get('category') if data.get('category') in PRIMARY_CATEGORIES else FALLBACK_CATEGORY
+
         db_entry = {
             "user_id": user.id, 
             "amount": float(data.get('amount', 0)), 
-            "category": data.get('category', 'Misc'), 
+            "category": final_category, 
             "description": f"Voice: {data.get('description', 'Expense')}", 
-            "transaction_date": data.get('date', '2026-01-04')
+            "transaction_date": data.get('date', current_date)
         }
-        supabase.table("transactions").insert(db_entry).execute()
+        
+        result = supabase.table("transactions").insert(db_entry).execute()
+        print(f"✅ Supabase Save: {result}")
         
         return {"status": "success", "transcript": data.get('transcript', ''), "data": data}
     except Exception as e:
+        print(f"❌ Error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # --- 6. AI CHAT ROUTE ---
@@ -128,16 +165,8 @@ async def chat_with_data(payload: dict, user=Depends(get_current_user)):
         secure_query = f"As a financial assistant for user_id '{user.id}', only query rows where user_id matches '{user.id}'. Question: {user_query}"
         
         response = agent_executor.invoke({"input": secure_query})
-        
-        raw_output = response["output"]
-        if isinstance(raw_output, list) and len(raw_output) > 0:
-            final_answer = raw_output[0].get("text", str(raw_output))
-        else:
-            final_answer = str(raw_output)
-
-        return {"status": "success", "answer": final_answer}
+        return {"status": "success", "answer": str(response["output"])}
     except Exception as e:
-        print(f"Chat Error: {str(e)}")
         raise HTTPException(status_code=500, detail="AI failed to query data.")
 
 # --- 7. PROACTIVE INSIGHTS ---
@@ -150,19 +179,10 @@ async def get_insight(user=Depends(get_current_user)):
         if not transactions:
             return {"insight": "Start adding expenses to see AI insights!"}
 
-        prompt = f"""
-        Analyze these transactions and give a 1-sentence proactive financial tip.
-        Be specific, helpful, and slightly "cool" or "fintech-pro". 
-        Data: {json.dumps(transactions)}
-        """
-        
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=[types.Part.from_text(text=prompt)]
-        )
-        
+        prompt = f"Analyze these transactions and give a 1-sentence proactive financial tip: {json.dumps(transactions)}"
+        response = client.models.generate_content(model=GEMINI_MODEL, contents=[types.Part.from_text(text=prompt)])
         return {"insight": response.text}
-    except Exception as e:
+    except Exception:
         return {"insight": "Keep tracking to unlock smart insights."}
 
 @app.get("/health")
@@ -170,6 +190,6 @@ def health(): return {"status": "Online"}
 
 if __name__ == "__main__":
     import uvicorn
-    # Use environment PORT for Railway deployment
+    # Bound to dynamic port for local or future cloud environments
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)
