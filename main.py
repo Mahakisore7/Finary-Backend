@@ -1,8 +1,6 @@
 import os
 import json
 import io
-import tempfile
-import whisper
 from fastapi import FastAPI, Depends, HTTPException, Header, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from supabase import create_client, Client
@@ -25,15 +23,11 @@ SB_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 AI_KEY = os.getenv("GEMINI_API_KEY")
 DB_URL = os.getenv("DATABASE_URL")
 
-origins = [
-    "http://localhost:3000",
-    "https://finary-ai.vercel.app", # Replace with your actual Vercel URL later
-]
-
 # --- 2. SERVICE INITIALIZATIONS ---
+# Origins configured for deployment
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # For the hackathon, "*" is easiest, but specific URLs are safer
+    allow_origins=["*"], 
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -57,8 +51,7 @@ except Exception as e:
     print(f"⚠️ SQL Agent Warning: {e}")
     agent_executor = None
 
-print("🚀 Loading Whisper Voice Model...")
-voice_model = whisper.load_model("base")
+# NOTE: whisper.load_model removed to fix 7.9GB build error
 
 # --- 3. AUTH DEPENDENCY ---
 async def get_current_user(authorization: str = Header(None)):
@@ -83,33 +76,51 @@ async def scan_receipt(file: UploadFile = File(...), user=Depends(get_current_us
             config=types.GenerateContentConfig(response_mime_type="application/json")
         )
         data = json.loads(response.text)
-        db_entry = {"user_id": user.id, "amount": float(data.get('amount', 0)), "category": data.get('category', 'Misc'), "description": data.get('description', 'AI Scan'), "transaction_date": data.get('date', '2026-01-01')}
+        db_entry = {
+            "user_id": user.id, 
+            "amount": float(data.get('amount', 0)), 
+            "category": data.get('category', 'Misc'), 
+            "description": data.get('description', 'AI Scan'), 
+            "transaction_date": data.get('date', '2026-01-01')
+        }
         supabase.table("transactions").insert(db_entry).execute()
         return {"status": "success", "data": data}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# --- 5. AI VOICE ROUTE ---
+# --- 5. UPDATED AI VOICE ROUTE (No Local Whisper) ---
 @app.post("/api/v1/voice-entry")
 async def voice_entry(file: UploadFile = File(...), user=Depends(get_current_user)):
-    temp_path = None
     try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as temp_audio:
-            temp_audio.write(await file.read())
-            temp_path = temp_audio.name
-        result = voice_model.transcribe(temp_path)
-        prompt = f'Extract transaction details from this text and return ONLY JSON: "{result["text"]}"'
-        ai_response = client.models.generate_content(model="gemini-2.5-flash", contents=[types.Part.from_text(text=prompt)], config=types.GenerateContentConfig(response_mime_type="application/json"))
+        audio_data = await file.read()
+        
+        # Gemini 2.5 handles audio files natively, eliminating the need for local Whisper
+        prompt = 'Transcribe this audio, then extract transaction details. Return ONLY JSON: {amount, category, description, date, transcript}'
+        
+        ai_response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=[
+                types.Part.from_text(text=prompt),
+                types.Part.from_bytes(data=audio_data, mime_type=file.content_type)
+            ],
+            config=types.GenerateContentConfig(response_mime_type="application/json")
+        )
+        
         data = json.loads(ai_response.text)
-        db_entry = {"user_id": user.id, "amount": float(data.get('amount', 0)), "category": data.get('category', 'Misc'), "description": f"Voice: {data.get('description', 'Expense')}", "transaction_date": data.get('date', '2026-01-04')}
+        db_entry = {
+            "user_id": user.id, 
+            "amount": float(data.get('amount', 0)), 
+            "category": data.get('category', 'Misc'), 
+            "description": f"Voice: {data.get('description', 'Expense')}", 
+            "transaction_date": data.get('date', '2026-01-04')
+        }
         supabase.table("transactions").insert(db_entry).execute()
-        return {"status": "success", "transcript": result['text'], "data": data}
+        
+        return {"status": "success", "transcript": data.get('transcript', ''), "data": data}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        if temp_path and os.path.exists(temp_path): os.remove(temp_path)
 
-# --- 6. AI CHAT ROUTE (Fixed for React) ---
+# --- 6. AI CHAT ROUTE ---
 @app.post("/api/v1/chat")
 async def chat_with_data(payload: dict, user=Depends(get_current_user)):
     try:
@@ -118,7 +129,6 @@ async def chat_with_data(payload: dict, user=Depends(get_current_user)):
         
         response = agent_executor.invoke({"input": secure_query})
         
-        # FIX: Extract only the text string so React doesn't crash
         raw_output = response["output"]
         if isinstance(raw_output, list) and len(raw_output) > 0:
             final_answer = raw_output[0].get("text", str(raw_output))
@@ -129,19 +139,17 @@ async def chat_with_data(payload: dict, user=Depends(get_current_user)):
     except Exception as e:
         print(f"Chat Error: {str(e)}")
         raise HTTPException(status_code=500, detail="AI failed to query data.")
-    
 
+# --- 7. PROACTIVE INSIGHTS ---
 @app.get("/api/v1/proactive-insight")
 async def get_insight(user=Depends(get_current_user)):
     try:
-        # 1. Fetch recent transactions
         res = supabase.table("transactions").select("*").eq("user_id", user.id).limit(10).execute()
         transactions = res.data
 
         if not transactions:
             return {"insight": "Start adding expenses to see AI insights!"}
 
-        # 2. Ask Gemini for a proactive "nudge"
         prompt = f"""
         Analyze these transactions and give a 1-sentence proactive financial tip.
         Be specific, helpful, and slightly "cool" or "fintech-pro". 
@@ -162,4 +170,6 @@ def health(): return {"status": "Online"}
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    # Use environment PORT for Railway deployment
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
