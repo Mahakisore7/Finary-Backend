@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: finary-backend
+    env: python
+    # Ensure this build command matches your backend setup
+    buildCommand: pip install -r requirements.txt
+    # Port 10000 is standard for Render
+    startCommand: uvicorn main:app --host 0.0.0.0 --port 10000
+    plan: free
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - fromContext: GEMINI_API_KEY
+      - fromContext: SUPABASE_URL
+      - fromContext: SUPABASE_SERVICE_ROLE_KEY
+      - fromContext: DATABASE_URL
