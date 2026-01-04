@@ -25,10 +25,15 @@ SB_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 AI_KEY = os.getenv("GEMINI_API_KEY")
 DB_URL = os.getenv("DATABASE_URL")
 
+origins = [
+    "http://localhost:3000",
+    "https://finary-ai.vercel.app", # Replace with your actual Vercel URL later
+]
+
 # --- 2. SERVICE INITIALIZATIONS ---
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"], 
+    allow_origins=["*"], # For the hackathon, "*" is easiest, but specific URLs are safer
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
