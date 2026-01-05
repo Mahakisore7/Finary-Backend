@@ -27,7 +27,7 @@ DB_URL = os.getenv("DATABASE_URL")
 
 PRIMARY_CATEGORIES = ["Food", "Travel", "Shopping", "Bills", "Entertainment", "Health"]
 FALLBACK_CATEGORY = "Misc"
-GEMINI_MODEL = "gemini-2.5-flash-lite" 
+GEMINI_MODEL = "gemini-1.5-flash" 
 
 class ChatRequest(BaseModel):
     message: str
