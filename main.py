@@ -159,17 +159,27 @@ async def voice_entry(file: UploadFile = File(...), user=Depends(get_current_use
 
 # --- 6. AI CHAT ROUTE ---
 @app.post("/api/v1/chat")
-async def chat_with_data(payload: dict, user=Depends(get_current_user)):
-    try:
-        user_query = payload.get("message")
-        secure_query = f"As a financial assistant for user_id '{user.id}', only query rows where user_id matches '{user.id}'. Question: {user_query}"
-        
-        response = agent_executor.invoke({"input": secure_query})
-        return {"status": "success", "answer": str(response["output"])}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail="AI failed to query data.")
+async def chat_endpoint(request: ChatRequest, x_user_id: str = Header(None)):
+    if not x_user_id:
+        raise HTTPException(status_code=400, detail="User identity missing")
 
-# --- 7. PROACTIVE INSIGHTS ---
+    # This prompt tells the AI it MUST filter by this specific user_id
+    privacy_prompt = f"""
+    You are a financial assistant for user_id: {x_user_id}.
+    CRITICAL: Every SQL query you write MUST include 'WHERE user_id = '{x_user_id}'' 
+    to ensure you only access THIS user's data. 
+    Do not query data for any other user_id.
+    
+    User Question: {request.message}
+    """
+    
+    try:
+        # Pass the PRIVACY PROMPT instead of just the raw message
+        response = agent_executor.invoke({"input": privacy_prompt})
+        return {"answer": response["output"]}
+    except Exception as e:
+        print(f"Agent Error: {e}")
+        return {"answer": "I couldn't access your specific data. Try again."}
 @app.get("/api/v1/proactive-insight")
 async def get_insight(user=Depends(get_current_user)):
     try:
