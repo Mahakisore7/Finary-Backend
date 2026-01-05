@@ -34,7 +34,7 @@ GEMINI_MODEL = "gemini-2.5-flash-lite"
 # --- 2. SERVICE INITIALIZATIONS ---
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://finary-ten.vercel.app/", "http://localhost:3000"], 
+    allow_origins=["https://finary-ten.vercel.app", "http://localhost:3000"], 
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
