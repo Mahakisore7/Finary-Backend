@@ -197,18 +197,41 @@ async def chat_endpoint(request: ChatRequest, x_user_id: str = Header(None)):
 @app.get("/api/v1/proactive-insight")
 async def get_insight(user=Depends(get_current_user)):
     try:
-        # Strictly query only current user's data
-        res = supabase.table("transactions").select("*").eq("user_id", user.id).order("transaction_date", desc=True).limit(10).execute()
-        if not res.data:
-            return {"insight": "Start adding expenses to unlock personalized AI insights!"}
+        # 1. Fetch only the most recent 15 transactions to avoid historical 'noise'
+        res = supabase.table("transactions") \
+            .select("*") \
+            .eq("user_id", user.id) \
+            .order("transaction_date", desc=True) \
+            .limit(15) \
+            .execute()
+        
+        transactions = res.data
+        if not transactions:
+            return {"insight": "Start logging your 2026 expenses to see AI-driven trends!"}
 
-        prompt = f"Analyze these transactions and give a 1-sentence tip: {json.dumps(res.data)}"
-        response = client.models.generate_content(model=GEMINI_MODEL_SDK, contents=[types.Part.from_text(text=prompt)])
-        return {"insight": response.text}
+        # 2. Strict Prompt Engineering to normalize data and force conciseness
+        prompt = f"""
+        You are a pro financial advisor. Analyze these transactions: {json.dumps(transactions)}.
+        
+        INSTRUCTIONS:
+        1. DATA CLEANING: Treat 'food', 'Food', and 'FOOD' as the same category. Normalize all names.
+        2. TIMELINE: Focus ONLY on the latest 2026 transactions. Ignore data from 2017/2023.
+        3. NO COMPLAINING: Do NOT mention naming inconsistencies or "mixed entries" to the user.
+        4. ACTIONABLE TIP: Provide exactly ONE professional, encouraging financial tip.
+        
+        Constraint: Max 15 words. No preamble.
+        """
+        
+        # Ensure you are using the supported 'gemini-2.5-flash' model
+        response = client.models.generate_content(
+            model="gemini-2.5-flash", 
+            contents=[types.Part.from_text(text=prompt)]
+        )
+        
+        return {"insight": response.text.strip()}
     except Exception as e:
         print(f"Insight Error: {e}")
-        return {"insight": "Keep tracking your spending to see smart trends."}
-
+        return {"insight": "Saving consistently is the first step to wealth."}
 @app.get("/health")
 def health(): return {"status": "Online"}
 
