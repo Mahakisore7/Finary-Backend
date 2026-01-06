@@ -29,8 +29,8 @@ PRIMARY_CATEGORIES = ["Food", "Travel", "Shopping", "Bills", "Entertainment", "H
 FALLBACK_CATEGORY = "Misc"
 
 # CRITICAL: Dual-naming convention to fix 404 errors
-GEMINI_MODEL_LANGCHAIN = "models/gemini-2.5-flash" 
-GEMINI_MODEL_SDK = "gemini-2.5-flash"
+GEMINI_MODEL_LANGCHAIN = "models/gemini-2.5-flash-lite" 
+GEMINI_MODEL_SDK = "gemini-2.5-flash-lite"
 
 class ChatRequest(BaseModel):
     message: str
