@@ -29,8 +29,8 @@ PRIMARY_CATEGORIES = ["Food", "Travel", "Shopping", "Bills", "Entertainment", "H
 FALLBACK_CATEGORY = "Misc"
 
 # CRITICAL: Dual-naming convention to fix 404 errors
-GEMINI_MODEL_LANGCHAIN = "models/gemini-1.5-flash" 
-GEMINI_MODEL_SDK = "gemini-1.5-flash"
+GEMINI_MODEL_LANGCHAIN = "models/gemini-2.5-flash" 
+GEMINI_MODEL_SDK = "gemini-2.5-flash"
 
 class ChatRequest(BaseModel):
     message: str
@@ -63,7 +63,6 @@ try:
 except Exception as e:
     print(f"⚠️ SQL Agent Warning: {e}")
     agent_executor = None
-
 # --- 3. AUTH DEPENDENCY ---
 async def get_current_user(authorization: str = Header(None)):
     if not authorization or not authorization.startswith("Bearer "):
