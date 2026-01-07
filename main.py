@@ -28,7 +28,7 @@ DB_URL = os.getenv("DATABASE_URL")
 PRIMARY_CATEGORIES = ["Food", "Travel", "Shopping", "Bills", "Entertainment", "Health"]
 FALLBACK_CATEGORY = "Misc"
 
-# CRITICAL: Dual-naming convention to fix 404 errors
+# Updated to stable 2.0 series for 2026 production
 GEMINI_MODEL_LANGCHAIN = "models/gemini-2.5-flash-lite" 
 GEMINI_MODEL_SDK = "gemini-2.5-flash-lite"
 
@@ -38,7 +38,6 @@ class ChatRequest(BaseModel):
 # --- 2. SERVICE INITIALIZATIONS ---
 app.add_middleware(
     CORSMiddleware,
-    # Standard origins for local and production deployment
     allow_origins=["https://finary-ten.vercel.app", "http://localhost:3000", "http://127.0.0.1:3000"], 
     allow_credentials=True,
     allow_methods=["*"],
@@ -48,11 +47,9 @@ app.add_middleware(
 supabase: Client = create_client(SB_URL, SB_KEY)
 client = genai.Client(api_key=AI_KEY)
 
-# SQL Agent Initialization
 try:
     print(f"🔌 Connecting to SQL Database...")
     db = SQLDatabase.from_uri(DB_URL)
-    # Using 'models/' prefix for LangChain compatibility
     llm = ChatGoogleGenerativeAI(model=GEMINI_MODEL_LANGCHAIN, google_api_key=AI_KEY, temperature=0)
     toolkit = SQLDatabaseToolkit(db=db, llm=llm)
     agent_executor = create_sql_agent(
@@ -63,6 +60,7 @@ try:
 except Exception as e:
     print(f"⚠️ SQL Agent Warning: {e}")
     agent_executor = None
+
 # --- 3. AUTH DEPENDENCY ---
 async def get_current_user(authorization: str = Header(None)):
     if not authorization or not authorization.startswith("Bearer "):
@@ -79,13 +77,19 @@ async def get_current_user(authorization: str = Header(None)):
 async def scan_receipt(file: UploadFile = File(...), user=Depends(get_current_user)):
     try:
         image_data = await file.read()
-        current_date = datetime.now().strftime("%Y-%m-%d")
+        # Dynamic date injection
+        now = datetime.now()
+        current_date_str = now.strftime("%Y-%m-%d")
         
         prompt = f"""
-        Analyze this receipt. 
-        Categorize the expense into one of these: {', '.join(PRIMARY_CATEGORIES)}. 
-        If it doesn't fit, use '{FALLBACK_CATEGORY}'.
-        Current Date: {current_date}
+        Analyze this receipt image. 
+        Categorize into: {', '.join(PRIMARY_CATEGORIES)}. Use '{FALLBACK_CATEGORY}' if unsure.
+        
+        TEMPORAL CONTEXT:
+        - The date today is {current_date_str}.
+        - Extract the date from the receipt. 
+        - If the receipt date is missing or unreadable, default to {current_date_str}.
+        
         Return ONLY JSON: {{"amount": number, "category": string, "description": string, "date": "YYYY-MM-DD"}}
         """
         
@@ -106,7 +110,7 @@ async def scan_receipt(file: UploadFile = File(...), user=Depends(get_current_us
             "amount": float(data.get('amount', 0)), 
             "category": final_category, 
             "description": data.get('description', 'AI Scan'), 
-            "transaction_date": data.get('date', current_date)
+            "transaction_date": data.get('date', current_date_str)
         }
         supabase.table("transactions").insert(db_entry).execute()
         return {"status": "success", "data": data}
@@ -118,10 +122,18 @@ async def scan_receipt(file: UploadFile = File(...), user=Depends(get_current_us
 async def voice_entry(file: UploadFile = File(...), user=Depends(get_current_user)):
     try:
         audio_data = await file.read()
-        current_date = datetime.now().strftime("%Y-%m-%d")
+        # Dynamic date injection
+        now = datetime.now()
+        current_date_str = now.strftime("%Y-%m-%d")
 
         prompt = f"""
-        Extract transaction from audio. Categorize into: {', '.join(PRIMARY_CATEGORIES)}. 
+        Extract transaction from audio.
+        TEMPORAL REASONING:
+        - Today is {current_date_str} (Day: {now.strftime('%A')}).
+        - If the user says "today", use {current_date_str}.
+        - If they say "yesterday", calculate the date relative to {current_date_str}.
+        - If no date is mentioned, default to {current_date_str}.
+        
         Return ONLY JSON: {{"amount": number, "category": string, "description": string, "date": "YYYY-MM-DD", "transcript": string}}
         """
         
@@ -142,7 +154,7 @@ async def voice_entry(file: UploadFile = File(...), user=Depends(get_current_use
             "amount": float(data.get('amount', 0)), 
             "category": final_category, 
             "description": f"Voice: {data.get('description', 'Expense')}", 
-            "transaction_date": data.get('date', current_date)
+            "transaction_date": data.get('date', current_date_str)
         }
         
         supabase.table("transactions").insert(db_entry).execute()
@@ -159,52 +171,49 @@ async def chat_endpoint(request: ChatRequest, x_user_id: str = Header(None)):
     if not agent_executor:
         return {"answer": "AI Agent offline. Check database connection."}
 
-    # CRITICAL: Multi-user data isolation via prompt injection
-    # UPDATED: Added strict output formatting rules to hide the UUID
+    # Dynamic date injection for relative queries (e.g., "this week")
+    now = datetime.now()
+    current_date_str = now.strftime("%Y-%m-%d")
+    current_day = now.strftime("%A")
+
     privacy_prompt = f"""
-    You are a professional and friendly financial assistant for user_id: {x_user_id}.
+    You are a friendly financial assistant for user_id: {x_user_id}.
     
-    SECURITY RULE: Every SQL query you write MUST include 'WHERE user_id = '{x_user_id}'' 
-    to ensure you ONLY access data belonging to this specific user.
+    TEMPORAL CONTEXT:
+    - Today is {current_day}, {current_date_str}.
+    - When the user asks about "today", "this week", or "this month", use this date as your reference.
     
-    OUTPUT FORMATTING RULES:
-    1. NEVER mention the string '{x_user_id}' or the term 'user ID' in your response.
-    2. Provide a clean, human-readable summary of the financial data found.
-    3. If asked for a total, respond with: "Your total spending is..." or "You have spent..."
-    4. Keep the tone helpful, professional, and concise.
+    SECURITY RULE:
+    - Every SQL query you write MUST include 'WHERE user_id = '{x_user_id}'' 
+    - Never return totals or data belonging to other user IDs.
+    
+    OUTPUT FORMATTING:
+    1. NEVER mention the string '{x_user_id}' or 'user ID' in the response.
+    2. Provide a clean, human-readable summary.
     
     User Question: {request.message}
     """
     
     try:
-        # Execute the agent chain
         response = agent_executor.invoke({"input": privacy_prompt})
-        
-        # --- ROBUST OUTPUT PARSING ---
-        # The agent returns a dict with an 'output' key
         raw_output = response.get("output", "I couldn't process that query.")
 
-        # If the output is a list of parts (extract text safely)
         if isinstance(raw_output, list):
-            # Get the 'text' field from the first item
             final_answer = raw_output[0].get('text', str(raw_output)) if raw_output else ""
         elif isinstance(raw_output, dict):
             final_answer = raw_output.get('text', str(raw_output))
         else:
             final_answer = str(raw_output)
 
-        # Return only the clean string to the frontend
         return {"answer": final_answer}
-
     except Exception as e:
         print(f"Agent Error: {e}")
-        return {"answer": "I'm having trouble analyzing your data. Please ensure the backend is live."}
+        return {"answer": "I'm having trouble analyzing your data. Please try again."}
 
 # --- 7. PROACTIVE INSIGHTS ---
 @app.get("/api/v1/proactive-insight")
 async def get_insight(user=Depends(get_current_user)):
     try:
-        # 1. Fetch only the most recent 15 transactions to avoid historical 'noise'
         res = supabase.table("transactions") \
             .select("*") \
             .eq("user_id", user.id) \
@@ -216,29 +225,28 @@ async def get_insight(user=Depends(get_current_user)):
         if not transactions:
             return {"insight": "Start logging your 2026 expenses to see AI-driven trends!"}
 
-        # 2. Strict Prompt Engineering to normalize data and force conciseness
+        now = datetime.now()
+        current_date_str = now.strftime("%Y-%m-%d")
+
         prompt = f"""
-        You are a pro financial advisor. Analyze these transactions: {json.dumps(transactions)}.
+        Analyze these transactions: {json.dumps(transactions)}.
         
         INSTRUCTIONS:
-        1. DATA CLEANING: Treat 'food', 'Food', and 'FOOD' as the same category. Normalize all names.
-        2. TIMELINE: Focus ONLY on the latest 2026 transactions. Ignore data from 2017/2023.
-        3. NO COMPLAINING: Do NOT mention naming inconsistencies or "mixed entries" to the user.
-        4. ACTIONABLE TIP: Provide exactly ONE professional, encouraging financial tip.
-        
-        Constraint: Max 15 words. No preamble.
+        1. DATA CLEANING: Normalize category names (treat 'food' and 'Food' as same).
+        2. TIMELINE: Today is {current_date_str}. Focus on recent 2026 trends.
+        3. ACTIONABLE TIP: Provide ONE short, professional financial tip (max 15 words).
         """
         
-        # Ensure you are using the supported 'gemini-2.5-flash' model
         response = client.models.generate_content(
-            model="gemini-2.5-flash", 
+            model=GEMINI_MODEL_SDK, 
             contents=[types.Part.from_text(text=prompt)]
         )
         
         return {"insight": response.text.strip()}
     except Exception as e:
         print(f"Insight Error: {e}")
-        return {"insight": "Saving consistently is the first step to wealth."}
+        return {"insight": "Consistent tracking is the key to financial growth."}
+
 @app.get("/health")
 def health(): return {"status": "Online"}
 
