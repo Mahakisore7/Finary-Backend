@@ -160,11 +160,18 @@ async def chat_endpoint(request: ChatRequest, x_user_id: str = Header(None)):
         return {"answer": "AI Agent offline. Check database connection."}
 
     # CRITICAL: Multi-user data isolation via prompt injection
+    # UPDATED: Added strict output formatting rules to hide the UUID
     privacy_prompt = f"""
-    You are a financial assistant for user_id: {x_user_id}.
-    CRITICAL: Every SQL query you write MUST include 'WHERE user_id = '{x_user_id}'' 
-    to ensure you ONLY access data belonging to this specific user. 
-    Never return totals or descriptions belonging to any other user_id.
+    You are a professional and friendly financial assistant for user_id: {x_user_id}.
+    
+    SECURITY RULE: Every SQL query you write MUST include 'WHERE user_id = '{x_user_id}'' 
+    to ensure you ONLY access data belonging to this specific user.
+    
+    OUTPUT FORMATTING RULES:
+    1. NEVER mention the string '{x_user_id}' or the term 'user ID' in your response.
+    2. Provide a clean, human-readable summary of the financial data found.
+    3. If asked for a total, respond with: "Your total spending is..." or "You have spent..."
+    4. Keep the tone helpful, professional, and concise.
     
     User Question: {request.message}
     """
@@ -177,9 +184,9 @@ async def chat_endpoint(request: ChatRequest, x_user_id: str = Header(None)):
         # The agent returns a dict with an 'output' key
         raw_output = response.get("output", "I couldn't process that query.")
 
-        # If the output is a list of parts (like in your screenshot), extract the text
+        # If the output is a list of parts (extract text safely)
         if isinstance(raw_output, list):
-            # Try to get the 'text' field from the first item, otherwise stringify the whole thing
+            # Get the 'text' field from the first item
             final_answer = raw_output[0].get('text', str(raw_output)) if raw_output else ""
         elif isinstance(raw_output, dict):
             final_answer = raw_output.get('text', str(raw_output))
@@ -191,7 +198,7 @@ async def chat_endpoint(request: ChatRequest, x_user_id: str = Header(None)):
 
     except Exception as e:
         print(f"Agent Error: {e}")
-        return {"answer": "I'm having trouble connecting. Ensure the backend is live and database is connected."}
+        return {"answer": "I'm having trouble analyzing your data. Please ensure the backend is live."}
 
 # --- 7. PROACTIVE INSIGHTS ---
 @app.get("/api/v1/proactive-insight")
