@@ -214,6 +214,7 @@ async def chat_endpoint(request: ChatRequest, x_user_id: str = Header(None)):
 @app.get("/api/v1/proactive-insight")
 async def get_insight(user=Depends(get_current_user)):
     try:
+        # 1. Fetch recent transactions
         res = supabase.table("transactions") \
             .select("*") \
             .eq("user_id", user.id) \
@@ -228,13 +229,20 @@ async def get_insight(user=Depends(get_current_user)):
         now = datetime.now()
         current_date_str = now.strftime("%Y-%m-%d")
 
+        # 2. STRICT PROMPT: Forbids internal reasoning in the output
         prompt = f"""
-        Analyze these transactions: {json.dumps(transactions)}.
+        You are a pro financial advisor. Analyze these transactions: {json.dumps(transactions)}.
         
-        INSTRUCTIONS:
-        1. DATA CLEANING: Normalize category names (treat 'food' and 'Food' as same).
-        2. TIMELINE: Today is {current_date_str}. Focus on recent 2026 trends.
-        3. ACTIONABLE TIP: Provide ONE short, professional financial tip (max 15 words).
+        STRICT RULES:
+        1. OUTPUT ONLY THE TIP: Do not show your analysis, data cleaning steps, or timeline logic.
+        2. NO PREAMBLE: Do not start with "Here is an analysis..." or "Based on your data...".
+        3. DATE CONTEXT: Today is {current_date_str}. Use this to find the most recent trends.
+        4. CATEGORY NORMALIZATION: Treat 'food' and 'Food' as identical behind the scenes.
+        
+        FINAL TASK: Provide exactly ONE actionable, encouraging financial tip. 
+        Example: "Your food spending is up this week; consider meal prepping to save 20%."
+        
+        Constraint: Max 20 words.
         """
         
         response = client.models.generate_content(
@@ -242,10 +250,12 @@ async def get_insight(user=Depends(get_current_user)):
             contents=[types.Part.from_text(text=prompt)]
         )
         
-        return {"insight": response.text.strip()}
+        # Clean up any accidental leading/trailing quotes or whitespace
+        return {"insight": response.text.strip().replace('"', '')}
+        
     except Exception as e:
         print(f"Insight Error: {e}")
-        return {"insight": "Consistent tracking is the key to financial growth."}
+        return {"insight": "Track your daily coffee spending to find hidden savings!"}
 
 @app.get("/health")
 def health(): return {"status": "Online"}
