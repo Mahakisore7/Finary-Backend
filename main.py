@@ -29,8 +29,8 @@ PRIMARY_CATEGORIES = ["Food", "Travel", "Shopping", "Bills", "Entertainment", "H
 FALLBACK_CATEGORY = "Misc"
 
 # Updated to stable 2.0 series for 2026 production
-GEMINI_MODEL_LANGCHAIN = "models/gemini-3-flash" 
-GEMINI_MODEL_SDK = "gemini-3-flash"
+GEMINI_MODEL_LANGCHAIN = "models/gemini-3-flash-preview" 
+GEMINI_MODEL_SDK = "gemini-3-flash-preview"
 
 class ChatRequest(BaseModel):
     message: str
